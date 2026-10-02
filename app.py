@@ -1,20 +1,40 @@
-import os 
+import os
+
 import pandas as pd
 import streamlit as st
+
 from dotenv import load_dotenv
 from sqlalchemy import URL, create_engine, text
 
-#PAGE CONFIGURATION
+from queries import (
+    KPI_QUERY,
+    FUNNEL_QUERY,
+    DEVICE_QUERY,
+    PRODUCT_QUERY,
+    DAILY_QUERY,
+    CUSTOMER_SEGMENT_QUERY
+)
+
+
+# -------------------------------------------------
+# PAGE CONFIGURATION
+# -------------------------------------------------
 st.set_page_config(
     page_title="RetailPulse",
     page_icon="📊",
     layout="wide"
 )
 
-#LOAD ENVIRONMENT VARIABLES
+
+# -------------------------------------------------
+# LOAD ENVIRONMENT VARIABLES
+# -------------------------------------------------
 load_dotenv()
 
-#DATABASE CONNECTION
+
+# -------------------------------------------------
+# DATABASE CONNECTION
+# -------------------------------------------------
 @st.cache_resource
 def get_database_connection():
 
@@ -23,137 +43,410 @@ def get_database_connection():
         username=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
+        port=int(os.getenv("DB_PORT")),
         database=os.getenv("DB_NAME")
     )
 
     return create_engine(database_url)
 
-#function call for getting the database to connect to UI
+
 engine = get_database_connection()
 
-#load KPI data
+
+# -------------------------------------------------
+# GENERIC QUERY FUNCTION
+# -------------------------------------------------
 @st.cache_data
-
-def load_kpis():
-    query="""
-    SELECT
-        COUNT(DISTINCT session_id) AS total_sessions,
-
-        COUNT(
-            DISTINCT CASE
-                WHEN event_type = 'purchase'
-                THEN session_id
-            END
-        ) AS purchase,
-        
-        SUM(
-            CASE
-                WHEN event_type = 'purchase'
-                THEN revenue
-                ELSE 0
-            END
-        ) AS total_revenue
-    
-    FROM events;
-    """
+def run_query(query):
 
     with engine.connect() as connection:
-        return pd.read_sql(query, connection)
+
+        return pd.read_sql(
+            text(query),
+            connection
+        )
 
 
-#LOAD FUNNEL DATA
-@st.cache_data
+# -------------------------------------------------
+# LOAD DATA
+# -------------------------------------------------
+kpi_data = run_query(KPI_QUERY)
 
-def load_funnel():
-    query = """
-    WITH FUNNEL AS(
-        SELECT 
-            COUNT(DISTINCT session_id) AS total_sessions,
-            COUNT(DISTINCT CASE WHEN event_type = 'product_view' THEN session_id END) AS product_views,
-            COUNT(DISTINCT CASE WHEN event_type = 'add_to_cart' THEN session_id END) AS add_to_cart,
-            COUNT(DISTINCT CASE WHEN event_type = 'checkout' THEN session_id END) AS checkout,
-            COUNT(DISTINCT CASE WHEN event_type = 'purchase' THEN session_id END) AS purchase
-        FROM events
-    )
-    
-    SELECT *
-    FROM (
-        SELECT 1 AS step_order, 'Sessions' AS step, total_sessions AS sessions
-        FROM funnel
-        
-        UNION ALL
-        
-        SELECT 2, 'Product View', product_views
-        FROM funnel
-        
-        UNION ALL
-        
-        SELECT 3, 'Add to Cart', add_to_cart
-        FROM funnel
-        
-        UNION ALL
-        
-        SELECT 4, 'Checkout', checkout
-        FROM funnel
-        
-        UNION ALL
-        
-        SELECT 5, 'Purchase', purchase
-        FROM funnel
-    ) funnel_steps
-    
-    ORDER BY step_order;
-    """
+funnel_data = run_query(FUNNEL_QUERY)
 
-    with engine.connect() as connection:
-        return pd.read_sql(text(query), connection)
+device_data = run_query(DEVICE_QUERY)
 
-#APPLICATION HEADER
+product_data = run_query(PRODUCT_QUERY)
+
+daily_data = run_query(DAILY_QUERY)
+
+customer_data = run_query(
+    CUSTOMER_SEGMENT_QUERY
+)
+
+
+# -------------------------------------------------
+# APPLICATION HEADER
+# -------------------------------------------------
 st.title("RetailPulse")
-st.subheader("E-Commerce Product Analytics")
-st.write("Analyze customer behavior, conversion, revenue, and product performance.")
 
-#GET DATA
-kpis = load_kpis().iloc[0]
-funnel = load_funnel()
+st.subheader(
+    "E-Commerce Product Analytics Platform"
+)
 
-total_sessions = int(kpis["total_sessions"])
-purchase = int(kpis["purchase"])
-total_revenue = float(kpis["total_revenue"])
-
-#Avoid division by zero error
-if total_sessions>0:
-    conversion_rate = (purchase/total_sessions)*100
-else:
-    conversion_rate = 0
+st.caption(
+    "SQL-driven analysis of customer behavior, "
+    "conversion, revenue, products, and customer segments."
+)
 
 
+# -------------------------------------------------
+# KPI CARDS
+# -------------------------------------------------
+kpis = kpi_data.iloc[0]
 
-#KPI CARDS
-col1, col2, col3, col4 = st.columns(4)
+
+col1, col2, col3, col4, col5 = st.columns(5)
+
 
 with col1:
-    st.metric("Sessions", f"{total_sessions:,}")
+
+    st.metric(
+        "Sessions",
+        f"{int(kpis['total_sessions']):,}"
+    )
+
 
 with col2:
-    st.metric("Purchases", f"{purchase:,}")
+
+    st.metric(
+        "Purchases",
+        f"{int(kpis['purchases']):,}"
+    )
+
 
 with col3:
-    st.metric("Conversion Rate", f"{conversion_rate:.2f}%")
+
+    st.metric(
+        "Conversion Rate",
+        f"{kpis['conversion_rate']:.2f}%"
+    )
+
 
 with col4:
-    st.metric("Total Revenue", f"${total_revenue:,.2f}")
+
+    st.metric(
+        "Revenue",
+        f"${kpis['total_revenue']:,.2f}"
+    )
 
 
-#CUSTOMER FUNNEL
+with col5:
+
+    st.metric(
+        "Average Order Value",
+        f"${kpis['average_order_value']:,.2f}"
+    )
+
+
 st.divider()
-st.subheader("Customer Conversion Funnel")
-
-funnel_chart = (funnel[["step", "sessions"]].set_index("step"))
-st.bar_chart(funnel_chart)
 
 
-#FUNNEL TABLE
-st.subheader("Funnel Breakdown")
-st.dataframe(funnel[["step", "sessions"]], use_container_width = True, hide_index=True)
+# -------------------------------------------------
+# NAVIGATION TABS
+# -------------------------------------------------
+overview_tab, funnel_tab, device_tab, product_tab, customer_tab = st.tabs(
+    [
+        "Overview",
+        "Conversion Funnel",
+        "Devices",
+        "Products",
+        "Customers"
+    ]
+)
+
+
+# -------------------------------------------------
+# OVERVIEW TAB
+# -------------------------------------------------
+with overview_tab:
+
+    st.header(
+        "Performance Overview"
+    )
+
+    st.subheader(
+        "Daily Conversion Rate"
+    )
+
+    daily_conversion = (
+        daily_data[
+            [
+                "event_date",
+                "conversion_rate"
+            ]
+        ]
+        .set_index("event_date")
+    )
+
+    st.line_chart(
+        daily_conversion
+    )
+
+
+    st.subheader(
+        "Daily Revenue"
+    )
+
+    daily_revenue = (
+        daily_data[
+            [
+                "event_date",
+                "revenue"
+            ]
+        ]
+        .set_index("event_date")
+    )
+
+    st.line_chart(
+        daily_revenue
+    )
+
+
+    st.subheader(
+        "Daily Performance"
+    )
+
+    st.dataframe(
+        daily_data,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# -------------------------------------------------
+# FUNNEL TAB
+# -------------------------------------------------
+with funnel_tab:
+
+    st.header(
+        "Customer Conversion Funnel"
+    )
+
+
+    funnel_chart = (
+        funnel_data[
+            [
+                "step",
+                "sessions"
+            ]
+        ]
+        .set_index("step")
+    )
+
+
+    st.bar_chart(
+        funnel_chart
+    )
+
+
+    st.subheader(
+        "Funnel Performance"
+    )
+
+
+    st.dataframe(
+        funnel_data[
+            [
+                "step",
+                "sessions",
+                "overall_conversion_pct",
+                "step_conversion_pct",
+                "dropoff_sessions",
+                "dropoff_pct"
+            ]
+        ],
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+    # Identify largest funnel loss
+    funnel_losses = (
+        funnel_data[
+            funnel_data["step_order"] > 1
+        ]
+        .sort_values(
+            "dropoff_pct",
+            ascending=False
+        )
+    )
+
+
+    if not funnel_losses.empty:
+
+        largest_loss = (
+            funnel_losses.iloc[0]
+        )
+
+
+        st.info(
+            f"Largest funnel drop-off occurs at "
+            f"{largest_loss['step']}: "
+            f"{largest_loss['dropoff_pct']:.2f}% "
+            f"of users from the previous stage "
+            f"did not continue."
+        )
+
+
+# -------------------------------------------------
+# DEVICE TAB
+# -------------------------------------------------
+with device_tab:
+
+    st.header(
+        "Device Performance"
+    )
+
+
+    st.write(
+        "Compare customer behavior and "
+        "commercial performance across devices."
+    )
+
+
+    device_conversion = (
+        device_data[
+            [
+                "device",
+                "conversion_rate"
+            ]
+        ]
+        .set_index("device")
+    )
+
+
+    st.subheader(
+        "Conversion Rate by Device"
+    )
+
+
+    st.bar_chart(
+        device_conversion
+    )
+
+
+    st.subheader(
+        "Device Metrics"
+    )
+
+
+    st.dataframe(
+        device_data,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# -------------------------------------------------
+# PRODUCT TAB
+# -------------------------------------------------
+with product_tab:
+
+    st.header(
+        "Product Performance"
+    )
+
+
+    st.write(
+        "Analyze which products convert "
+        "customer interest into purchases and revenue."
+    )
+
+
+    top_products = (
+        product_data
+        .head(10)
+    )
+
+
+    st.subheader(
+        "Top Products by Revenue"
+    )
+
+
+    product_revenue_chart = (
+        top_products[
+            [
+                "product_id",
+                "revenue"
+            ]
+        ]
+        .set_index("product_id")
+    )
+
+
+    st.bar_chart(
+        product_revenue_chart
+    )
+
+
+    st.subheader(
+        "Product Metrics"
+    )
+
+
+    st.dataframe(
+        product_data,
+        use_container_width=True,
+        hide_index=True
+    )
+
+
+# -------------------------------------------------
+# CUSTOMER TAB
+# -------------------------------------------------
+with customer_tab:
+
+    st.header(
+        "Customer Segmentation"
+    )
+
+
+    st.write(
+        "Understand how browsing and purchasing "
+        "behavior differs across customer groups."
+    )
+
+
+    customer_revenue = (
+        customer_data[
+            [
+                "customer_segment",
+                "revenue"
+            ]
+        ]
+        .set_index("customer_segment")
+    )
+
+
+    st.subheader(
+        "Revenue by Customer Segment"
+    )
+
+
+    st.bar_chart(
+        customer_revenue
+    )
+
+
+    st.subheader(
+        "Customer Segment Metrics"
+    )
+
+
+    st.dataframe(
+        customer_data,
+        use_container_width=True,
+        hide_index=True
+    )
